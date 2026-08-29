@@ -27,10 +27,3 @@
 ### 移除
 
 - **leidiRW 后端**：由 TGodRW 取代
-
-## [2.4] - 2025-05-02
-
-- 多后端架构初始版本：syscallRW、copyRW、Qx11RW、RtRW，统一 `baseRW` 抽象接口
-
-[2.5]: https://github.com/dizhunleidi/DiRW/compare/2.4...2.5
-[2.4]: https://github.com/dizhunleidi/DiRW/releases/tag/v2.4
