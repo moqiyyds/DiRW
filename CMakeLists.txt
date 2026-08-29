@@ -1,7 +1,7 @@
 # diRW — CMake 构建（与同目录 Android.mk 等价）
 #
-# 命令行构建（NDK r19+，在项目根目录执行）：
-#   cmake -B build jni \
+# 命令行构建（NDK r19+，在仓库根目录执行）：
+#   cmake -B build \
 #     -DCMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake \
 #     -DANDROID_ABI=arm64-v8a \
 #     -DANDROID_PLATFORM=android-26 \

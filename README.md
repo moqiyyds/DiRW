@@ -51,7 +51,8 @@ diRW 是一个 C++17 编写的 Android 进程内存读写库。通过统一的�
 ### 方式一：ndk-build（默认）
 
 ```bash
-ndk-build    # 在项目根目录执行（jni/ 为经典 ndk-build 布局）
+# 在仓库根目录执行（仓库内已无 jni/ 嵌套，需显式指定构建脚本）
+ndk-build NDK_PROJECT_PATH=. NDK_APPLICATION_MK=Application.mk APP_BUILD_SCRIPT=Android.mk
 ```
 
 编译产物：`libs/arm64-v8a/diRW_test`
@@ -59,8 +60,8 @@ ndk-build    # 在项目根目录执行（jni/ 为经典 ndk-build 布局）
 ### 方式二：CMake（可选，与 ndk-build 等价）
 
 ```bash
-# 在项目根目录执行，$NDK 换成你的 NDK 路径
-cmake -B build jni \
+# 在仓库根目录执行，$NDK 换成你的 NDK 路径
+cmake -B build \
   -DCMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake \
   -DANDROID_ABI=arm64-v8a \
   -DANDROID_PLATFORM=android-26 \
@@ -340,24 +341,20 @@ int val = rw->getDword(0x12345678);
 ## 项目结构
 
 ```
-DiRW2.4/
-├── LICENSE
-├── libs/arm64-v8a/           # 编译产物
-├── obj/                      # 中间产物
-└── jni/
-    ├── Android.mk              # NDK 构建配置（ndk-build）
-    ├── CMakeLists.txt          # CMake 构建配置（可选，与 Android.mk 等价）
-    ├── Application.mk          # ABI/平台设置
-    ├── example.cpp             # 完整示例程序
-    ├── tool.h                  # PID / 模块基址工具函数
-    ├── README.md
-    └── diRW/
-        ├── baseRW.hpp          # 抽象基类（PID 模式、连接状态、类型读写、指针链）
-        ├── syscallRW.hpp       # 后端：process_vm 系统调用
-        ├── copyRW.hpp          # 后端：memcpy 同进程读写
-        ├── Qx11RW.hpp          # 后端：QX11 内核驱动
-        ├── RtRW.hpp            # 后端：Root 内核驱动
-        └── TGodRW.hpp          # 后端：TGod 内核模块（DiDevice.kpm）
+DiRW/                        # 仓库根（原 jni/ 目录）
+├── Android.mk               # NDK 构建配置（ndk-build）
+├── CMakeLists.txt           # CMake 构建配置（可选，与 Android.mk 等价）
+├── Application.mk           # ABI/平台设置
+├── example.cpp              # 完整示例程序
+├── tool.h                   # PID / 模块基址工具函数
+├── README.md
+└── diRW/
+    ├── baseRW.hpp           # 抽象基类（PID 模式、连接状态、类型读写、指针链）
+    ├── syscallRW.hpp        # 后端：process_vm 系统调用
+    ├── copyRW.hpp           # 后端：memcpy 同进程读写
+    ├── Qx11RW.hpp           # 后端：QX11 内核驱动
+    ├── RtRW.hpp             # 后端：Root 内核驱动
+    └── TGodRW.hpp           # 后端：TGod 内核模块（DiDevice.kpm）
 ```
 
 ---
