@@ -9,7 +9,8 @@
  *   2. Qx11RW    — QX11 内核驱动 via ioctl（需要 root + 驱动）
  *   3. RtRW      — Root 级内核驱动 via ioctl（需要 root + 驱动）
  *   4. TGodRW    — TGod(DiDevice) 内核模块 via inet_ioctl（需要 root + KPM 模块）
- *   5. copyRW    — 直接 memcpy（仅同进程，免 root）
+ *   5. TwTRW     — TwT 内核驱动 via anon_inode ioctl（需要 root + 驱动）
+ *   6. copyRW    — 直接 memcpy（仅同进程，免 root）
  */
 
 #include <iostream>
@@ -20,6 +21,7 @@
 #include "Qx11RW.hpp"
 #include "RtRW.hpp"
 #include "TGodRW.hpp"
+#include "TwTRW.hpp"
 #include "copyRW.hpp"
 #include "tool.h"
 
@@ -59,7 +61,7 @@ static void demo_backend_selection() {
     AUTO_DELETE(local);
 
     /*
-     * syscallRW(跨UID) / Qx11RW / RtRW / TGodRW — 需要 root
+     * syscallRW(跨UID) / Qx11RW / RtRW / TGodRW / TwTRW — 需要 root
      * 如果驱动未加载，构造时会打印错误信息并继续运行
      */
     auto* qx = new Qx11RW(baseRW::PidMode::Private, getPID("com.example.target"));
@@ -341,6 +343,89 @@ static void demo_tgodrw() {
 }
 
 // ============================================================
+//  8. TwTRW — TwT 内核驱动（anon_inode ioctl 通道，需要 root）
+// ============================================================
+static void demo_twtrw() {
+    cout << "\n========== 8. TwTRW（TwT 驱动读写） ==========" << endl;
+
+    /*
+     * TwTRW 对接 TwT 内核驱动：驱动 hook 了 reboot 系统调用，
+     * 构造时用魔数分支下发 anon_inode fd，之后通过 ioctl 通讯。
+     * isConnected() 可查询对接结果；需要 root + 设备上已加载 TwT 驱动。
+     *
+     * 构造函数第 4/5 个参数可独立启用陀螺仪和触摸（-1 不启用，默认）：
+     *   new TwTRW(mode, pid, baseRW::PidMode::Global, 0, 1);  // 陀螺仪 tracepoint + 触摸模式 1
+     * 也可以构造后单独调 gyro_init() / touch_init()。
+     *
+     * 读模式作用域复用 pid 的 Global/Private 语义（第三个构造参数，同 TGodRW）：
+     *   MOD1（默认）走 READ_MEM；MOD2 走 READ_MEM_V2 —— 驱动的两条读取通道
+     *   Global（默认）—— setMod 改静态全局；Private —— 读模式存实例内互不干扰
+     *
+     * 驱动附带功能（详见 TwTRW.hpp）：
+     *   get_pid_by_name()        — 驱动侧按进程名取 PID
+     *   get_module_bss()         — 驱动侧取模块 .bss 基址
+     *   touch_init/down/up       — 触摸注入
+     *   gyro_init/modify/disable — 陀螺仪
+     *   bp_inst/bp_get_hits/...  — 硬件断点/观察点
+     */
+    auto* rw = new TwTRW(baseRW::PidMode::Private, getPID("com.example.target"));
+    if (!rw->isConnected() || rw->getProcessPid() < 0) {
+        cout << "[-] 驱动未连接或 PID 无效，跳过演示。" << endl;
+        AUTO_DELETE(rw);
+        return;
+    }
+
+    // 模块基址（驱动侧 MODULE_BASE）
+    uintptr_t base = rw->get_module_base("libc.so");
+    if (base == 0) {
+        cout << "[-] 模块未找到" << endl;
+        AUTO_DELETE(rw);
+        return;
+    }
+    cout << "[TwTRW]   libc.so 基址: 0x" << hex << base << dec << endl;
+
+    // 读取（默认 MOD1 通道）
+    int value = 0;
+    if (rw->readv(base, &value, sizeof(value)))
+        cout << "[TwTRW]   MOD1 读取成功: " << value << endl;
+    else
+        cout << "[TwTRW]   MOD1 读取失败" << endl;
+
+    // 切到 MOD2 通道（READ_MEM_V2）读取：Global 模式下切全局，读完切回
+    rw->setMod(TwTRW::ReadMode::MOD2);
+    int value2 = 0;
+    if (rw->readv(base, &value2, sizeof(value2)))
+        cout << "[TwTRW]   MOD2 读取成功: " << value2 << endl;
+    else
+        cout << "[TwTRW]   MOD2 读取失败" << endl;
+    rw->setMod(TwTRW::ReadMode::MOD1);
+
+    // 多线程场景建议每线程一个 Private 读模式的实例：
+    // auto* rw2 = new TwTRW(baseRW::PidMode::Private, pid, baseRW::PidMode::Private);
+    // rw2->setMod(TwTRW::ReadMode::MOD2);  // 只影响 rw2
+
+    // 写入并读回验证
+    int magic = 0x114514;
+    if (rw->writev(base, &magic, sizeof(magic))) {
+        int readback = 0;
+        rw->readv(base, &readback, sizeof(readback));
+        cout << "[TwTRW]   写入并读回: 0x" << hex << readback << dec
+             << (readback == magic ? "  (验证一致)" : "  (验证不一致!)") << endl;
+    } else {
+        cout << "[TwTRW]   写入失败" << endl;
+    }
+
+    // 断点示例（替换为真实地址）：
+    // rw->bp_init_driver();
+    // uint64_t handle = rw->bp_inst(pid, addr, TWT_BP_LEN_4, TWT_BP_RW);
+    // auto hits = rw->bp_get_hits(handle);
+    // rw->bp_uninst(handle);
+
+    AUTO_DELETE(rw);
+    cout << "===============================================" << endl;
+}
+
+// ============================================================
 //  主函数
 // ============================================================
 int main() {
@@ -357,6 +442,7 @@ int main() {
     demo_module_base();
     demo_copyRW();
     demo_tgodrw();
+    demo_twtrw();
 
     cout << "\n===== 演示结束 =====" << endl;
     return 0;

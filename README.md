@@ -2,7 +2,7 @@
 
 **Android 进程内存读写库（多后端架构）**
 
-diRW 是一个 C++17 编写的 Android 进程内存读写库。通过统一的抽象接口提供了 **5 种后端实现**，切换后端无需改动业务代码。
+diRW 是一个 C++17 编写的 Android 进程内存读写库。通过统一的抽象接口提供了 **6 种后端实现**，切换后端无需改动业务代码。
 
 ---
 
@@ -15,7 +15,7 @@ diRW 是一个 C++17 编写的 Android 进程内存读写库。通过统一的�
 ## 特性
 
 - **统一 API** — 所有后端继承自 `baseRW`，提供相同的 `readv` / `writev` 接口
-- **5 种后端** — syscall、memcpy、QX11 驱动、RT 驱动、TGod 内核模块
+- **6 种后端** — syscall、memcpy、QX11 驱动、RT 驱动、TGod 内核模块、TwT 驱动
 - **连接状态** — 所有后端统一维护 `connected` 标志，对接失败不退出进程，用 `isConnected()` 查询
 - **线程安全标志** — 全局 PID 与 TGod 读模式均为 `std::atomic`，多线程切换立即可见
 - **PID 模式** — 全局模式（共享 PID）和私有模式（各自独立 PID）
@@ -33,7 +33,7 @@ diRW 是一个 C++17 编写的 Android 进程内存读写库。通过统一的�
 - Android NDK r17+（推荐 r20 或更高）
 - 目标 API：**Android 8.0+ (API 26)**
 - ABI：`arm64-v8a`
-- Root 权限：跨进程读写其他应用时，`syscallRW` 与驱动后端（`Qx11RW`、`RtRW`、`TGodRW`）都需要 root；仅 `copyRW`（同进程）完全免 root
+- Root 权限：跨进程读写其他应用时，`syscallRW` 与驱动后端（`Qx11RW`、`RtRW`、`TGodRW`、`TwTRW`）都需要 root；仅 `copyRW`（同进程）完全免 root
 
 ---
 
@@ -46,9 +46,10 @@ diRW 是一个 C++17 编写的 Android 进程内存读写库。通过统一的�
 | **Qx11RW** | 需要 | QX11 驱动 | 跨进程/同进程 | 快 | 通过 `ioctl` 与 QX11 内核驱动通信 |
 | **RtRW** | 需要 | Root 驱动 | 跨进程/同进程 | 快 | 通过 `ioctl` 与 RT 内核驱动通信 |
 | **TGodRW** | 需要 | TGod 模块 (KPM) | 跨进程/同进程 | 快/中等 | 通过 inet socket 的 `ioctl` 与内核模块通信；支持无缓存读取 |
+| **TwTRW** | 需要 | TwT 驱动 | 跨进程/同进程 | 快 | fd 由驱动的 reboot 魔数分支下发（anon_inode），`ioctl` 通信；附带触摸/陀螺仪/硬件断点 |
 
 **推荐：** `syscallRW` 是最通用的后端，但跨 UID 读其他应用在 Android 4.5+ 同样需要 root；
-读不到时换内核驱动后端（TGodRW/Qx11RW/RtRW）。
+读不到时换内核驱动后端（TGodRW/Qx11RW/RtRW/TwTRW）。
 
 ---
 
@@ -108,6 +109,7 @@ android {
 // #include "Qx11RW.hpp"    // QX11 内核驱动
 // #include "RtRW.hpp"      // Root 内核驱动
 // #include "TGodRW.hpp"    // TGod 内核模块（KPM）
+// #include "TwTRW.hpp"     // TwT 内核驱动
 
 using namespace diRW;
 ```
@@ -198,7 +200,56 @@ rw2->setMod(TGodRW::ReadMode::NO_CACHE);   // 只影响 rw2
 
 无缓存读取由内核模块走页表 + `vmap` 实现，绕过 CPU cache，适合读取易变数据，但比普通读取慢。
 
-### 8. 工具函数（tool.h）
+### 8. TwTRW 驱动附带功能
+
+```cpp
+// TwT 驱动的 fd 由 reboot 系统调用魔数分支自动下发，构造即完成对接
+// 第 4/5 个参数可独立启用陀螺仪和触摸（-1 不启用，默认）：
+//   gyro_mode: 0=tracepoint 1=uprobe    touch_mode: 0/1
+// 第 3 个参数是读模式作用域（同 TGodRW，默认 Global）
+auto* rw = new TwTRW(baseRW::PidMode::Private, getPID("com.example.app"), baseRW::PidMode::Global, 0, 1);
+if (!rw->isConnected()) { /* 驱动未加载或无 root */ }
+
+// 也可以构造后单独初始化（与构造参数互不影响，各自独立）
+rw->gyro_init(0);
+rw->touch_init(1);
+
+// 读模式（同 TGodRW 的作用域处理，复用 pid 的 Global/Private 语义）：
+//   MOD1（默认）走 READ_MEM；MOD2 走 READ_MEM_V2 —— 驱动的两条读取通道
+rw->setMod(TwTRW::ReadMode::MOD2);       // Global 实例改全局，Private 实例只改自己
+rw->setMod(TwTRW::ReadMode::MOD1);
+
+// 读写与其他后端一致（readv/writev/getDword/getFloat/...）
+int v = 0;
+rw->readv(addr, &v, sizeof(v));
+
+// 驱动侧能力
+pid_t pid = rw->get_pid_by_name("com.example.app");  // 按进程名取 PID
+uintptr_t bss = rw->get_module_bss("libil2cpp.so");  // 模块 .bss 基址
+
+// 触摸注入（模式 0/1，先 init）
+rw->touch_init(0);
+rw->touch_down(0, 500, 800);
+rw->touch_up(0);
+
+// 陀螺仪（0=tracepoint 1=uprobe，先 init）
+rw->gyro_init(0);
+rw->gyro_modify(1.5f, -0.5f);
+
+// 硬件断点：命中时读寄存器快照
+rw->bp_init_driver();
+uint64_t handle = rw->bp_inst(pid, addr, TWT_BP_LEN_4, TWT_BP_RW);
+auto hits = rw->bp_get_hits(handle);                 // std::vector<TwtHitItem>
+for (auto& h : hits) {
+    uint64_t x0 = TwTRW::get_xregs(h, 0);            // X0 寄存器
+    float s0 = TwTRW::get_vregs_float(h, 0);         // V0 浮点寄存器
+}
+rw->bp_uninst(handle);
+```
+
+断点还支持命中瞬间自动修改寄存器（`bp_inst` 传 `TwtRegBatch`，或事后 `bp_set_reg`/`bp_set_pc`/`bp_set_vreg_float` 等），详见 `TwTRW.hpp`。
+
+### 9. 工具函数（tool.h）
 
 ```cpp
 int pid = getPID("com.example.app");                    // 包名 → PID
@@ -342,6 +393,28 @@ int val = rw->getDword(0x12345678);
 | `setGlobalMod(mode)` | `void`（静态） | 设置全局读模式 |
 | `getGlobalMod()` | `ReadMode`（静态） | 获取全局读模式 |
 
+### TwTRW 专属
+
+| 方法 | 返回 | 说明 |
+|------|------|------|
+| `setMod(mode)` | `void` | 切换读模式（Global 实例改全局，Private 实例改自身） |
+| `getMod()` | `ReadMode` | 本实例当前生效的读模式 |
+| `setGlobalMod(mode)` | `void`（静态） | 设置全局读模式 |
+| `getGlobalMod()` | `ReadMode`（静态） | 获取全局读模式 |
+| `get_pid_by_name(name)` | `pid_t` | 驱动侧按进程名取 PID |
+| `get_module_bss(name)` | `uintptr_t` | 驱动侧取模块 .bss 基址 |
+| `touch_init/down/up` | `bool` | 触摸注入 |
+| `gyro_init/modify/disable` | `bool` | 陀螺仪控制 |
+| `bp_inst/bp_uninst/...` | 见头文件 | 硬件断点/观察点全生命周期管理 |
+
+构造函数第 4/5 个参数 `gyro_mode`、`touch_mode` 可在构造时独立初始化陀螺仪与
+触摸（`-1` 不启用），也可构造后各自单独调用 `gyro_init()`/`touch_init()`。
+
+**TwTRW 读模式**：作用域处理与 `TGodRW` 相同——`MOD1`（默认）走 `READ_MEM`、
+`MOD2` 走 `READ_MEM_V2`，是驱动的两条读取通道；读模式作用域复用 PID 的
+Global/Private 语义（构造第三个参数），支持全局切换（`setGlobalMod`）或按实例
+独立，多线程互不干扰。
+
 ---
 
 ## 项目结构
@@ -360,7 +433,8 @@ DiRW/                        # 仓库根（原 jni/ 目录）
     ├── copyRW.hpp           # 后端：memcpy 同进程读写
     ├── Qx11RW.hpp           # 后端：QX11 内核驱动
     ├── RtRW.hpp             # 后端：Root 内核驱动
-    └── TGodRW.hpp           # 后端：TGod 内核模块（DiDevice.kpm）
+    ├── TGodRW.hpp           # 后端：TGod 内核模块（DiDevice.kpm）
+    └── TwTRW.hpp            # 后端：TwT 内核驱动（anon_inode ioctl）
 ```
 
 ---
