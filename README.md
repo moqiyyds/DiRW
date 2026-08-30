@@ -107,7 +107,7 @@ android {
 #include "syscallRW.hpp"   // 系统调用方式（免root）
 // #include "copyRW.hpp"    // 同进程 memcpy
 // #include "Qx11RW.hpp"    // QX11 内核驱动
-// #include "RtRW.hpp"      // Root 内核驱动
+// #include "RtRW.hpp"      // Rt 内核驱动
 // #include "TGodRW.hpp"    // TGod 内核模块（KPM）
 // #include "TwTRW.hpp"     // TwT 内核驱动
 
